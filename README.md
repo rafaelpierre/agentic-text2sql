@@ -165,7 +165,7 @@ Tested on 10 Natural Language → SQL examples covering:
 
 | Metric | Value |
 |---|---|
-| Average score | 83.6 / 100 |
+| Average score | 92.7 / 100 |
 | Average latency | ~8s |
 | Self-correcting retries | ModelRetry on OperationalError |
 
@@ -232,3 +232,90 @@ async def execute_sql(ctx: RunContext[PipelineDeps], sql: str) -> str:
     except OperationalError as e:
         raise ModelRetry(f"SQL error: {e}\nSchema:\n{ctx.deps.dbml}") from e
 ```
+
+---
+
+## Appendix — Research Directions for Improving Agentic Text2SQL
+
+The current pipeline scores ~92.7/100 on 10 eval queries with ~8s latency. The main bottleneck is the **one-shot BM25 retrieval** in Stage 2 — it's fast (<50ms) but fragile: keyword mismatches ("revenue" won't match `total_amount`), no semantic understanding, and fixed top-3 table selection. Below are 5 research directions, prioritized by expected impact.
+
+### Current Pipeline Weaknesses (from code analysis)
+
+1. **BM25 keyword mismatch** — FTS5 matches literal tokens. Lemmatization helps but doesn't bridge synonyms.
+2. **Fixed top-k=3 tables** — Simple queries may need 1 table; complex queries may need 5+.
+3. **No column-level precision** — DBML dumps ALL columns for matched tables, increasing prompt noise.
+4. **No retrieval feedback loop** — On SQL failure, `ModelRetry` re-prompts the agent with the *same* schema. If a table/column is missing from the DBML, it can never self-correct.
+5. **Flat query expansion** — LLM extracts nouns but doesn't reason about relationships or domain semantics.
+
+### Direction 1: Hierarchical Retrieval
+
+Replace the single-pass BM25 with a multi-level cascade:
+
+- **Level 1 — Coarse**: BM25 over `table_registry` → top-5 candidate tables (broad recall)
+- **Level 2 — Fine-grained**: For each candidate, BM25/semantic search over its `column_registry`. Prune tables whose best column score is below a threshold.
+- **Level 3 — Relationship expansion**: FK-walk from surviving tables, but only add neighbors if they contribute relevant columns (not blind expansion like today)
+- **Level 4 — Schema assembly**: Generate DBML with relevant columns annotated or irrelevant ones pruned
+
+**Files**: `retrieval.py`, `fts.py`, `dbml_gen.py`
+
+### Direction 2: Hybrid Retrieval (BM25 + Embeddings)
+
+Add a dense embedding index alongside BM25 for semantic matching.
+
+- Embed `search_doc` for each table/column at seed time (e.g. `text-embedding-3-small` or local `sentence-transformers`)
+- At query time, fuse BM25 scores with cosine similarity via Reciprocal Rank Fusion (RRF)
+- Directly fixes the synonym problem: "revenue" will be semantically close to "total_amount"
+- Can use `sqlite-vec` extension for in-process vector search (no new infra)
+
+**Files**: New `embedding.py`, modify `fts.py`, `retrieval.py`, `meta_schema.py`
+
+### Direction 3: Retrieval-Augmented Self-Correction (Closed-Loop Retrieval)
+
+When the SQL agent fails with "no such table/column", feed the error back to **retrieval**, not just the SQL agent.
+
+- Parse `OperationalError` messages for missing entities
+- Trigger a **targeted re-retrieval** for that specific table/column
+- Expand the DBML and re-run the SQL agent with enriched context
+
+**Files**: `text2sql.py`, `retrieval.py`
+
+### Direction 4: Schema-Aware Query Decomposition
+
+For complex questions, decompose into sub-questions, retrieve schema per sub-question, then compose.
+
+Example: *"Average order value for customers in New York who bought Electronics"*
+- Sub-Q1: "customers in New York" → `users` (city)
+- Sub-Q2: "Electronics products" → `products` (category)
+- Sub-Q3: "average order value" → `orders` (total_amount)
+- Compose: verify JOIN paths exist via FK graph
+
+**Files**: `retrieval.py`, `text2sql.py`
+
+### Direction 5: Few-Shot Example Retrieval
+
+Retrieve similar previously-successful NL→SQL pairs as few-shot examples for the SQL agent.
+
+- Build an example bank from eval/production runs: (question, SQL, score)
+- At query time, embed the question → find top-2 nearest examples → inject into system prompt
+- Proven technique in text2sql literature; especially helps with CTEs, window functions
+
+**Files**: New `example_store.py`, modify `text2sql.py`
+
+### Recommended Priority
+
+| Priority | Direction | Expected Gain | Complexity | Latency Impact |
+|----------|-----------|---------------|------------|----------------|
+| 1 | **Hierarchical Retrieval** | Medium-high | Medium | +10-20ms |
+| 2 | **Hybrid BM25+Embeddings** | High | Medium | +50-100ms |
+| 3 | **Few-Shot Example Retrieval** | Medium-high | Low-medium | +100-200ms |
+| 4 | **Closed-Loop Retrieval** | Medium | Low | +0ms (only on retry) |
+| 5 | **Query Decomposition** | High (complex Qs) | High | +1-2s |
+
+**Recommendation**: Start with **Direction 1** (hierarchical retrieval) — it improves the existing BM25 pipeline with no new dependencies. Then layer **Direction 2** (embeddings) on top for semantic matching. **Direction 4** (closed-loop retrieval) is a quick parallel win.
+
+### Verification
+
+1. **Expand eval set** from 10 → 25-30 examples: add synonym-heavy queries, ambiguous column references, 4+ table joins, date arithmetic, negation queries
+2. **Add retrieval-specific metrics**: Table Recall@k, Column Precision — measure retrieval quality independently from SQL generation
+3. **A/B comparison**: Run old vs. new retrieval on same eval set, compare scores and latency
+4. **Track retrieval latency** separately from end-to-end latency
