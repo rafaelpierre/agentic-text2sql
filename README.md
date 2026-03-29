@@ -1,6 +1,6 @@
 # agentic-text2sql
 
-A fast, self-correcting Natural Language → SQL pipeline built with **pydantic-ai** and **Azure OpenAI**.
+A fast, self-correcting Natural Language → SQL pipeline built with **[Pydantic AI](https://ai.pydantic.dev/)** as the agent orchestration framework and **Azure OpenAI** as the model backend.
 
 - **~8 seconds** end-to-end latency on a 10-table e-commerce schema
 - **Self-correcting SQL** via `ModelRetry` on `OperationalError`
@@ -11,41 +11,50 @@ A fast, self-correcting Natural Language → SQL pipeline built with **pydantic-
 
 ## Architecture
 
-```
-User question
-      │
-      ▼
-┌─────────────────────────────────────────────────────┐
-│  Stage 1 — LLM Query Expansion  (~1s)               │
-│  gpt-5.4-nano  ·  max_tokens=150                    │
-│  Extracts noun phrases from the question             │
-│  Fallback: NLTK stopword removal                    │
-└────────────────────┬────────────────────────────────┘
-                     │  ["product", "category", ...]
-                     ▼
-┌─────────────────────────────────────────────────────┐
-│  Stage 2 — Fast Schema Lookup  (<50ms)              │
-│  Pure Python — no LLM call                          │
-│  • asyncio.gather → parallel FTS per query term     │
-│  • BM25 score merge, top-3 tables                   │
-│  • FK neighbour expansion                           │
-│  • DBML generation                                  │
-└────────────────────┬────────────────────────────────┘
-                     │  DBML schema snippet
-                     ▼
-┌─────────────────────────────────────────────────────┐
-│  Stage 3 — SQL Agent  (~6-8s)                       │
-│  gpt-5.3-chat  ·  REASONING_EFFORT=low              │
-│  Tool: execute_sql → ModelRetry on OperationalError │
-│  Output: validated SQL + result rows                │
-└────────────────────┬────────────────────────────────┘
-                     │  rows + SQL
-                     ▼
-┌─────────────────────────────────────────────────────┐
-│  Stage 4 — Answer Narration  (~1s, optional)        │
-│  gpt-5.4-nano  ·  max_tokens=300                    │
-│  Converts result rows to plain-English answer       │
-└─────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Q(["User question"]) --> S1
+
+    subgraph S1 ["Stage 1 — LLM Query Expansion  ~1s"]
+        direction TB
+        E1["gpt-5.4-nano · max_tokens=150"]
+        E2["Extract noun phrases"]
+        E3["Fallback: NLTK stopword removal"]
+        E1 --> E2 --> E3
+    end
+
+    S1 -->|"noun terms"| S2
+
+    subgraph S2 ["Stage 2 — Fast Schema Lookup  <50ms  ·  no LLM"]
+        direction TB
+        F1["asyncio.gather → parallel FTS per term"]
+        F2["BM25 score merge · top-3 tables"]
+        F3["FK neighbour expansion"]
+        F4["DBML generation"]
+        F1 --> F2 --> F3 --> F4
+    end
+
+    S2 -->|"DBML schema snippet"| S3
+
+    subgraph S3 ["Stage 3 — SQL Agent  ~6-8s  ·  Pydantic AI"]
+        direction TB
+        A1["gpt-5.3-chat · REASONING_EFFORT=low"]
+        A2["Tool: execute_sql"]
+        A3["ModelRetry on OperationalError"]
+        A1 --> A2 --> A3
+        A3 -->|"retry with error context"| A1
+    end
+
+    S3 -->|"SQL + result rows"| S4
+
+    subgraph S4 ["Stage 4 — Answer Narration  ~1s  optional"]
+        direction TB
+        N1["gpt-5.4-nano · max_tokens=300"]
+        N2["Plain-English answer"]
+        N1 --> N2
+    end
+
+    S4 --> R(["Answer + SQL + rows"])
 ```
 
 ---
