@@ -411,13 +411,13 @@ async def _run_async(
 # Public sync entry point
 # ---------------------------------------------------------------------------
 
-def run_pipeline(
+async def run_pipeline_async(
     question: str,
     conn: Connection | None = None,
     narrate: bool = True,
     verbose: bool = False,
 ) -> PipelineResult:
-    """Run the full Text2SQL pipeline (sync entry point)."""
+    """Run the pipeline on the caller's event loop."""
     import logging
     configure_logging(logging.DEBUG if verbose else logging.INFO)
     log.info("🚀 Starting Text2SQL pipeline for: %r", question)
@@ -431,5 +431,15 @@ def run_pipeline(
 
     if conn is None:
         with engine.connect() as _conn:
-            return asyncio.run(_run(_conn))
-    return asyncio.run(_run(conn))
+            return await _run(_conn)
+    return await _run(conn)
+
+
+def run_pipeline(
+    question: str,
+    conn: Connection | None = None,
+    narrate: bool = True,
+    verbose: bool = False,
+) -> PipelineResult:
+    """Run the full pipeline from the CLI."""
+    return asyncio.run(run_pipeline_async(question, conn, narrate, verbose))

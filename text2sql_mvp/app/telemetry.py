@@ -22,25 +22,39 @@ def create_tracer_provider(exporter=None):
 
 
 @contextmanager
-def trace_question(question):
-    """Instrument a CLI invocation and flush even when the application fails."""
+def tracing_session():
+    """Install instrumentation for a CLI invocation or an entire server lifetime."""
 
     provider = create_tracer_provider()
     previous = Agent._instrument_default
     Agent.instrument_all(InstrumentationSettings(tracer_provider=provider, version=5))
     try:
-        with provider.get_tracer('agentic-text2sql').start_as_current_span(
-            'text2sql.question', record_exception=False, set_status_on_exception=False,
-            attributes={'openinference.span.kind': 'CHAIN', 'input.value': question},
-        ) as span:
-            try:
-                yield span
-            except BaseException:
-                span.set_status(Status(StatusCode.ERROR, 'application_failure'))
-                raise
+        yield provider
     finally:
         Agent.instrument_all(previous)
         try:
             provider.force_flush(timeout_millis=5000)
         finally:
             provider.shutdown()
+
+
+@contextmanager
+def question_span(provider, question):
+    """Create a question trace using context-local parentage for agent spans."""
+    with provider.get_tracer('agentic-text2sql').start_as_current_span(
+        'text2sql.question', record_exception=False, set_status_on_exception=False,
+        attributes={'openinference.span.kind': 'CHAIN', 'input.value': question},
+    ) as span:
+        try:
+            yield span
+        except BaseException:
+            span.set_status(Status(StatusCode.ERROR, 'application_failure'))
+            raise
+
+
+@contextmanager
+def trace_question(question):
+    """Instrument a CLI invocation and flush even when the application fails."""
+    with tracing_session() as provider:
+        with question_span(provider, question) as span:
+            yield span

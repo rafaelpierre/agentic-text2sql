@@ -132,6 +132,37 @@ The CLI prints the actual root trace ID and flushes before exiting, including on
 
 The tracing extra pins Pydantic AI 2.65.0 and OpenInference Pydantic AI 0.1.32. Test without model calls using `uv run --locked --extra tracing pytest -q` (requires the usual NLTK data for existing retrieval tests).
 
+### FastAPI interface and tracing
+
+Start the API from the project root after configuring and seeding the database:
+
+```sh
+uv run uvicorn text2sql_mvp.app.api:app --reload
+```
+
+Open http://127.0.0.1:8000/docs for the interactive interface. `POST /ask`
+accepts `question`, `narrate` (default `true`), and `verbose` (default `false`)
+and returns the pipeline result, including SQL, rows, answer, and error.
+`GET /health` checks server liveness without calling the models or database.
+
+API tracing is also **off by default**. Enable it for all questions with:
+
+```sh
+TEXT2SQL_TRACING=true uv run --extra tracing uvicorn text2sql_mvp.app.api:app --reload
+```
+
+You can also set `TEXT2SQL_TRACING=true` in `.env`. The API shares the CLI's
+Phoenix endpoint, project, authentication, and captured content settings above.
+Each question creates a separate root trace with automatic agent, model, and
+tool spans. Responses include `X-Trace-ID`, including pipeline failures (502)
+and unexpected errors (500). Invalid requests (422) and health checks do not
+create question traces.
+
+The server initializes instrumentation once, exports spans in batches while
+running, and flushes on graceful shutdown. Missing tracing dependencies cause
+an actionable startup error when tracing is enabled. The app binds to localhost
+by default and has no authentication.
+
 ---
 
 ## CLI Reference
