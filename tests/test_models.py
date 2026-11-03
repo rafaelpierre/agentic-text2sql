@@ -2,7 +2,8 @@
 import json
 import os
 
-import httpx
+# Pydantic AI 2 / OpenAI 3 use the httpx2 transport.
+import httpx2 as httpx
 import pytest
 from pydantic_ai import Agent
 from pydantic import BaseModel

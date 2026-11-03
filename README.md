@@ -114,6 +114,24 @@ uv run python cli.py ask "Top 5 customers by lifetime spend" --verbose
 uv run python cli.py ask "How many orders were placed last month?" --no-narrate
 ```
 
+### Optional Phoenix tracing
+
+Tracing is **off by default**. Enable automatic OpenInference agent, model, and tool spans for one question:
+
+```sh
+uv run --locked --extra tracing python cli.py ask "Which products are in the Electronics category?" --trace
+```
+
+Start Phoenix separately first. The default OTLP HTTP endpoint is `http://localhost:6006/v1/traces`; open `http://localhost:6006` and select project `agentic-text2sql`. Optional settings in your ignored `.env`:
+
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`: full collector URL ending in `/v1/traces`.
+- `PHOENIX_PROJECT_NAME`: project name (default `agentic-text2sql`).
+- `PHOENIX_API_KEY`: bearer key for an authenticated Phoenix instance.
+
+The CLI prints the actual root trace ID and flushes before exiting, including on failure. Traces capture prompts, SQL, model outputs, and tool activity; credentials are not added as span attributes. Without the flag, no exporter is created and the tracing extra is unnecessary. A printed trace ID alone does not prove ingestion if the collector is unreachable. Tracing does not create experiments or run evaluations.
+
+The tracing extra pins Pydantic AI 2.65.0 and OpenInference Pydantic AI 0.1.32. Test without model calls using `uv run --locked --extra tracing pytest -q` (requires the usual NLTK data for existing retrieval tests).
+
 ---
 
 ## CLI Reference

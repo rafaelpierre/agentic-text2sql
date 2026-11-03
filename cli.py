@@ -118,9 +118,26 @@ def cmd_ask(
     question: str = typer.Argument(..., help="Natural-language question"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show pipeline details"),
     no_narrate: bool = typer.Option(False, "--no-narrate", help="Skip plain-English answer"),
+    trace: bool = typer.Option(False, "--trace", help="Export OpenInference traces to Phoenix"),
 ):
     """Run the full Text2SQL pipeline and print results."""
-    result = run_pipeline(question, narrate=not no_narrate, verbose=verbose)
+    if trace:
+        try:
+            from text2sql_mvp.app.telemetry import trace_question
+            from opentelemetry.trace import Status, StatusCode
+        except ImportError:
+            typer.echo('Tracing requires: uv sync --extra tracing; run with uv run --extra tracing python cli.py ask ... --trace', err=True)
+            raise typer.Exit(2) from None
+        with trace_question(question) as span:
+            result = run_pipeline(question, narrate=not no_narrate, verbose=verbose)
+            if result.error:
+                span.set_status(Status(StatusCode.ERROR, 'application_failure'))
+            else:
+                span.set_attribute('output.value', result.generated_sql)
+            trace_id = format(span.get_span_context().trace_id, '032x')
+        typer.echo(f"Trace ID: {trace_id}")
+    else:
+        result = run_pipeline(question, narrate=not no_narrate, verbose=verbose)
 
     if verbose:
         typer.echo(f"\nExpanded queries: {result.expanded_queries}")
